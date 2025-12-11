@@ -8,7 +8,7 @@ import {
   useReactFlow,
   ReactFlowProvider,
 } from "@xyflow/react";
-import CustomNode from "./customNode";
+import CustomNode from "./CustomNode";
 import ConfigurationPanel from "./configurationPanel";
 import { getLayoutedElements } from "./utils/layout";
 import "@xyflow/react/dist/style.css";
