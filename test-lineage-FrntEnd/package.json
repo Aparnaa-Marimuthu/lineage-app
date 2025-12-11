@@ -16,7 +16,6 @@
     "@xyflow/react": "^12.8.2",
     "dagre": "^0.8.5",
     "react": "^19.1.0",
-    "react-beautiful-dnd": "^13.1.1",
     "react-dom": "^19.1.0",
     "react-icons": "^5.5.0"
   },
