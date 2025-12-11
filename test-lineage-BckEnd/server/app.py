@@ -1,4 +1,4 @@
-# app.py - Initializes Flask app, loads config, and registers routes
+# app.py - Initializes Flask app (supports both local config.yaml and Vercel env vars)
 
 from flask import Flask
 from flask_cors import CORS
@@ -7,22 +7,45 @@ import requests
 import os
 from urls import register_routes
 
+def load_databricks_config():
+    """
+    Load config from environment variables (Vercel)
+    OR fallback to config.yaml (local development).
+    """
+
+    # Try environment variables first (Vercel)
+    host = os.getenv("DATABRICKS_HOST")
+    http_path = os.getenv("DATABRICKS_HTTP_PATH")
+    token = os.getenv("DATABRICKS_TOKEN")
+
+    if host and http_path and token:
+        return host, http_path, token
+
+    # Fallback to config.yaml (local only)
+    try:
+        with open("config.yaml", "r") as f:
+            cfg = yaml.safe_load(f)
+        host = cfg["databricks"]["host"]
+        http_path = cfg["databricks"]["http_path"]
+        token = cfg["databricks"]["token"]
+        return host, http_path, token
+
+    except Exception:
+        raise ValueError(
+            "Missing Databricks config. Set environment variables OR create config.yaml locally."
+        )
+
+
 def create_app():
     app = Flask(__name__)
-    CORS(app)  
+    CORS(app)
 
-    with open("config.yaml", "r") as f:
-        cfg = yaml.safe_load(f)
-
-    server_hostname = cfg["databricks"].get("host")
-    http_path = cfg["databricks"].get("http_path")
-    token = cfg["databricks"].get("token")
-
-    if not server_hostname or not http_path or not token:
-        raise ValueError("Missing config values. Check config.yaml for host, http_path, and token.")
+    # Load configuration (env first, YAML fallback)
+    server_hostname, http_path, token = load_databricks_config()
 
     warehouse_id = http_path.split("/")[-1]
 
+    # Store in Flask config
     app.config["DATABRICKS"] = {
         "base_url": f"https://{server_hostname}/api/2.0/sql/statements",
         "warehouse_id": warehouse_id,
@@ -37,11 +60,12 @@ def create_app():
     app.config["HTTP_SESSION"] = sess
 
     register_routes(app)
-
     return app
 
+
+# Required entrypoint for Vercel serverless Python
+app = create_app()
+
+# Only used locally
 if __name__ == "__main__":
-    app = create_app()
-    port = int(os.environ.get("PORT", 3000))
-    # Flask dev server — fine for local; use a WSGI server in prod
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)), debug=True)
