@@ -52,7 +52,9 @@ function App() {
     setRootLabel(formattedLabel);
 
     try {
-      const res = await fetch("/data", {
+      const API_BASE = import.meta.env.VITE_API_BASE;
+
+      const res = await fetch(`${API_BASE}/data`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query }),
