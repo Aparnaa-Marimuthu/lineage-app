@@ -1,0 +1,5 @@
+databricks:
+  host: "<your-host>"
+  http_path: "<your-http-path>"
+  token: "<your-token>"
+  warehouse_id: "<your-id>"
