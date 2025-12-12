@@ -3,11 +3,17 @@
 venv/
 **/config.yaml
 __pycache__/
+.env
+*.db
+*.pyc
 
 # Node / Frontend
 node_modules/
 dist/
 dist-ssr/
+.env
+.env.local
+build/
 
 # Logs
 *.log

@@ -3,3 +3,5 @@ flask-cors
 requests
 PyYAML
 python-dotenv
+requests
+psycopg2-binary

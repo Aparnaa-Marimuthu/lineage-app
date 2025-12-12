@@ -92,7 +92,6 @@ function App() {
     setNodes([]);
     setEdges([]);
     setRootLabel("Lineage Root");
-    
     console.log('Application reset to initial state');
   };
 

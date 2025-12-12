@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3000';
+const USER_ID = 'default_user';
 
 const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetchColumnsFromQuery, onClearAll }) => {
   const [isOpen, setIsOpen] = useState(true);
@@ -69,98 +71,108 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
     return query;
   };
 
-  useEffect(() => {
-    let hasRun = false;
+useEffect(() => {
+  let hasRun = false;
+  
+  const loadAndApplySavedSettings = async () => {
+    if (hasRun) return;
+    hasRun = true;
     
-    const loadAndApplySavedSettings = async () => {
-      if (hasRun) return;
+    try {
+      console.log('Fetching settings from server for user:', USER_ID);
+      const response = await fetch(`${API_BASE}/api/user-settings/${USER_ID}`);
       
-      const savedSettings = localStorage.getItem('lineageAppSettings');
-      if (savedSettings) {
-        hasRun = true;
-        setIsLoadingSettings(true);
-        try {
-          const settings = JSON.parse(savedSettings);
-          console.log('Loading saved settings:', settings);
+      if (response.status === 404) {
+        console.log('No saved settings found');
+        return;
+      }
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch settings');
+      }
+      
+      const settings = await response.json();
+      
+      if (!settings || !settings.queryText) {
+        console.log('No valid settings found');
+        return;
+      }
+      
+      setIsLoadingSettings(true);
+      console.log('Loading saved settings from database:', settings);
+      
+      setQueryText(settings.queryText);
+      
+      const columns = await fetchColumnsFromQuery(settings.queryText);
+      
+      if (Array.isArray(columns) && columns.length > 0) {
+        if (settings.selectClause) setSelectClause(settings.selectClause);
+        if (settings.fromClause) setFromClause(settings.fromClause);
+        
+        const hasFilters = settings.filterSelections && 
+                          Object.keys(settings.filterSelections).length > 0 &&
+                          Object.values(settings.filterSelections).some(f => f.values && f.values.length > 0);
+        
+        let dataToApply = null;
+        
+        if (hasFilters) {
+          console.log('Re-applying saved filters:', settings.filterSelections);
+          setFilterSelections(settings.filterSelections);
           
-          if (settings.queryText) {
-            setQueryText(settings.queryText);
-
-            const columns = await fetchColumnsFromQuery(settings.queryText);
-            
-            if (Array.isArray(columns) && columns.length > 0) {
-              if (settings.selectClause) setSelectClause(settings.selectClause);
-              if (settings.fromClause) setFromClause(settings.fromClause);
-
-              const hasFilters = settings.filterSelections && 
-                                Object.keys(settings.filterSelections).length > 0 &&
-                                Object.values(settings.filterSelections).some(f => f.values && f.values.length > 0);
-              
-              let dataToApply = null;
-              
-              if (hasFilters) {
-                console.log('Re-applying saved filters:', settings.filterSelections);
-                setFilterSelections(settings.filterSelections);
-
-                const filterQuery = buildFilterQueryFromSelections(
-                  settings.queryText,
-                  settings.filterSelections
-                );
-                
-                console.log('Executing filter query on mount:', filterQuery);
-
-                const filteredColumns = await fetchColumnsFromQuery(filterQuery);
-                
-                if (filteredColumns.length > 0 && window.lastQueryResult?.rows?.length > 0) {
-                  dataToApply = {
-                    columns: filteredColumns,
-                    rows: window.lastQueryResult.rows
-                  };
-                  setFilteredData(dataToApply);
-                  console.log('Filters re-applied successfully');
-                }
-              }
-              
-              if (settings.selectedColumns) {
-                setSelectedColumns(settings.selectedColumns);
-              }
-              if (settings.orderedColumns) {
-                setOrderedColumns(settings.orderedColumns);
-              }
-              
-              if (settings.orderedColumns && settings.orderedColumns.length > 0) {
-                setTimeout(() => {
-                  console.log('Auto-applying saved configuration with filters...');
-
-                  const finalDataToApply = dataToApply || (window.lastQueryResult ? {
-                    columns: columns,
-                    rows: window.lastQueryResult.rows
-                  } : null);
-                  
-                  onApply(settings.orderedColumns, finalDataToApply);
-                  setIsLoadingSettings(false);
-                }, 500);
-              } else {
-                setIsLoadingSettings(false);
-              }
-              
-              console.log('Settings loaded and applied successfully');
-            } else {
-              setIsLoadingSettings(false);
-            }
-          } else {
-            setIsLoadingSettings(false);
+          const filterQuery = buildFilterQueryFromSelections(
+            settings.queryText,
+            settings.filterSelections
+          );
+          
+          console.log('Executing filter query on mount:', filterQuery);
+          const filteredColumns = await fetchColumnsFromQuery(filterQuery);
+          
+          if (filteredColumns.length > 0 && window.lastQueryResult?.rows?.length > 0) {
+            dataToApply = {
+              columns: filteredColumns,
+              rows: window.lastQueryResult.rows
+            };
+            setFilteredData(dataToApply);
+            console.log('Filters re-applied successfully');
           }
-        } catch (error) {
-          console.error('Failed to load saved settings:', error);
+        }
+        
+        if (settings.selectedColumns) {
+          setSelectedColumns(settings.selectedColumns);
+        }
+        if (settings.orderedColumns) {
+          setOrderedColumns(settings.orderedColumns);
+        }
+        
+        if (settings.orderedColumns && settings.orderedColumns.length > 0) {
+          setTimeout(() => {
+            console.log('Auto-applying saved configuration...');
+            
+            const finalDataToApply = dataToApply || (window.lastQueryResult ? {
+              columns: columns,
+              rows: window.lastQueryResult.rows
+            } : null);
+            
+            onApply(settings.orderedColumns, finalDataToApply);
+            setIsLoadingSettings(false);
+          }, 500);
+        } else {
           setIsLoadingSettings(false);
         }
+        
+        console.log('Settings loaded and applied successfully');
+      } else {
+        setIsLoadingSettings(false);
       }
-    };
-    
-    loadAndApplySavedSettings();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+      setIsLoadingSettings(false);
+    }
+  };
+  
+  loadAndApplySavedSettings();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
 
   useEffect(() => {
     const savedSettings = localStorage.getItem('lineageAppSettings');
@@ -272,7 +284,7 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
     onApply(orderedColumns, filteredData);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const settings = {
       queryText,
       selectedColumns,
@@ -285,18 +297,37 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
     };
     
     try {
-      localStorage.setItem('lineageAppSettings', JSON.stringify(settings));
-      alert('Settings saved successfully! They will be loaded automatically next time.');
-      console.log('Settings saved:', settings);
+      const response = await fetch(`${API_BASE}/api/user-settings/${USER_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings),
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to save settings');
+      }
+      
+      const result = await response.json();
+      alert(' Settings saved successfully! Available on all machines.');
+      console.log('Settings saved to database:', result);
     } catch (error) {
       console.error('Failed to save settings:', error);
-      alert('Failed to save settings. Please try again.');
+      alert(' Failed to save settings: ' + error.message);
     }
   };
 
-  const handleClearSettings = () => {
-    if (window.confirm('Are you sure you want to clear all saved settings?')) {
-      localStorage.removeItem('lineageAppSettings');
+  const handleClearSettings = async () => {
+  if (window.confirm('Are you sure you want to clear all saved settings?')) {
+    try {
+      const response = await fetch(`${API_BASE}/api/user-settings/${USER_ID}`, {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to delete settings');
+      }
+      
       setQueryText('');
       setSelectedColumns([]);
       setOrderedColumns([]);
@@ -307,14 +338,18 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
       setActiveColumn(null);
       setShowFilterDropdown(false);
       setSearchTerm('');
-
+      
       if (onClearAll) {
         onClearAll();
       }
       
-      alert('Saved settings cleared!');
+      alert(' All settings cleared from database!');
+    } catch (error) {
+      console.error('Failed to clear settings:', error);
+      alert(' Failed to clear settings: ' + error.message);
     }
-  };
+  }
+};
 
   const handleSearch = (e) => {
     setSearchTerm(e.target.value);

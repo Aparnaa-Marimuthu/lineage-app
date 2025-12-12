@@ -1,12 +1,11 @@
-# views.py - Defines request handlers (logic for each API endpoint)
-
 from flask import request, jsonify, current_app
 import requests
+from database import get_settings, save_settings, delete_settings
 
 def get_data():
     """
     POST /data
-    Body: { "query": "<SQL here>" }
+    Body: { "query": "" }
     Calls Databricks SQL Statements API and returns { columns: [...], rows: [...] }.
     """
     try:
@@ -35,10 +34,7 @@ def get_data():
             }), resp.status_code
 
         result = resp.json()
-        
-
         schema = [c["name"] for c in result.get("manifest", {}).get("schema", {}).get("columns", [])]
-
         rows = result.get("result", {}).get("data_array", [])
 
         formatted_rows = [
@@ -53,9 +49,66 @@ def get_data():
             "error": "Databricks query failed (network)",
             "details": str(e),
         }), 502
+
     except Exception as e:
         return jsonify({
             "error": "Databricks query failed",
             "details": str(e),
         }), 500
 
+def get_user_settings(user_id):
+    """GET /api/user-settings/<user_id>"""
+    try:
+        settings = get_settings(user_id)
+        
+        if not settings:
+            return jsonify({"message": "No settings found"}), 404
+        
+        return jsonify(settings), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to fetch settings",
+            "details": str(e)
+        }), 500
+
+
+def save_user_settings(user_id):
+    """POST /api/user-settings/<user_id>"""
+    try:
+        body = request.get_json(silent=True) or {}
+        
+        if not body or len(body) == 0:
+            return jsonify({"error": "Settings data is required"}), 400
+        
+        updated_at = save_settings(user_id, body)
+        
+        return jsonify({
+            "message": "Settings saved successfully",
+            "userId": user_id,
+            "savedAt": updated_at
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to save settings",
+            "details": str(e)
+        }), 500
+
+
+def delete_user_settings(user_id):
+    """DELETE /api/user-settings/<user_id>"""
+    try:
+        deleted_count = delete_settings(user_id)
+        
+        return jsonify({
+            "message": "Settings deleted successfully",
+            "userId": user_id,
+            "deletedRows": deleted_count
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to delete settings",
+            "details": str(e)
+        }), 500
