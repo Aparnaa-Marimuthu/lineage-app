@@ -84,6 +84,18 @@ function App() {
     }
   };
 
+  const handleClearAll = () => {
+    setRawData([]);
+    setAvailableColumns([]);
+    setHierarchyKeys([]);
+    setExpandedLevels({});
+    setNodes([]);
+    setEdges([]);
+    setRootLabel("Lineage Root");
+    
+    console.log('Application reset to initial state');
+  };
+
   const handleApply = (newHierarchy, filteredData) => {
     setHierarchyKeys(newHierarchy);
     setExpandedLevels({});
@@ -424,6 +436,7 @@ function App() {
     <div style={{ width: "100vw", height: "100vh", position: "relative" }}>
       <ConfigurationPanel
         onApply={handleApply}
+        onClearAll={handleClearAll} 
         currentHierarchy={hierarchyKeys}
         availableColumns={availableColumns}
         fetchColumnsFromQuery={fetchColumnsFromQuery}

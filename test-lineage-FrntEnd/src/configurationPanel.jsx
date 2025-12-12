@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetchColumnsFromQuery }) => {
+const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetchColumnsFromQuery, onClearAll }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [panelWidth, setPanelWidth] = useState(300);
   const [isResizing, setIsResizing] = useState(false);
@@ -85,15 +85,13 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
           
           if (settings.queryText) {
             setQueryText(settings.queryText);
-            
-            // Step 1: Execute the base query first
+
             const columns = await fetchColumnsFromQuery(settings.queryText);
             
             if (Array.isArray(columns) && columns.length > 0) {
               if (settings.selectClause) setSelectClause(settings.selectClause);
               if (settings.fromClause) setFromClause(settings.fromClause);
-              
-              // Step 2: Check if there are saved filters
+
               const hasFilters = settings.filterSelections && 
                                 Object.keys(settings.filterSelections).length > 0 &&
                                 Object.values(settings.filterSelections).some(f => f.values && f.values.length > 0);
@@ -101,19 +99,16 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
               let dataToApply = null;
               
               if (hasFilters) {
-                // Step 3: Re-apply filters by building and executing filter query
                 console.log('Re-applying saved filters:', settings.filterSelections);
                 setFilterSelections(settings.filterSelections);
-                
-                // Build the filter query
+
                 const filterQuery = buildFilterQueryFromSelections(
                   settings.queryText,
                   settings.filterSelections
                 );
                 
                 console.log('Executing filter query on mount:', filterQuery);
-                
-                // Execute filter query
+
                 const filteredColumns = await fetchColumnsFromQuery(filterQuery);
                 
                 if (filteredColumns.length > 0 && window.lastQueryResult?.rows?.length > 0) {
@@ -126,7 +121,6 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
                 }
               }
               
-              // Step 4: Restore selections
               if (settings.selectedColumns) {
                 setSelectedColumns(settings.selectedColumns);
               }
@@ -134,11 +128,16 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
                 setOrderedColumns(settings.orderedColumns);
               }
               
-              // Step 5: Auto-apply to render the chart
               if (settings.orderedColumns && settings.orderedColumns.length > 0) {
                 setTimeout(() => {
                   console.log('Auto-applying saved configuration with filters...');
-                  onApply(settings.orderedColumns, dataToApply);
+
+                  const finalDataToApply = dataToApply || (window.lastQueryResult ? {
+                    columns: columns,
+                    rows: window.lastQueryResult.rows
+                  } : null);
+                  
+                  onApply(settings.orderedColumns, finalDataToApply);
                   setIsLoadingSettings(false);
                 }, 500);
               } else {
@@ -212,10 +211,8 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
     };
   }, []);
 
-  // Close filter dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
-      // Check if click is outside filter dropdown and active column dropdown
       const filterDropdown = document.querySelector('[data-filter-dropdown]');
       const activeDropdown = document.querySelector('[data-active-dropdown]');
       
@@ -306,6 +303,15 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
       setFilterSelections({});
       setSelectClause('');
       setFromClause('');
+      setFilteredData(null);
+      setActiveColumn(null);
+      setShowFilterDropdown(false);
+      setSearchTerm('');
+
+      if (onClearAll) {
+        onClearAll();
+      }
+      
       alert('Saved settings cleared!');
     }
   };
@@ -473,16 +479,13 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
       return queryText;
     }
 
-    // Parse the original query to find WHERE, ORDER BY, GROUP BY positions
     const normalizedQuery = queryText.trim();
-    
-    // Find the position of ORDER BY, GROUP BY, HAVING (case insensitive)
+
     const orderByMatch = normalizedQuery.match(/\s+ORDER\s+BY\s+/i);
     const groupByMatch = normalizedQuery.match(/\s+GROUP\s+BY\s+/i);
     const havingMatch = normalizedQuery.match(/\s+HAVING\s+/i);
     const whereMatch = normalizedQuery.match(/\s+WHERE\s+/i);
 
-    // Find the earliest position of these clauses (if they exist)
     let insertPosition = normalizedQuery.length;
     let foundClause = null;
 
@@ -503,7 +506,6 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
 
     let query;
     if (whereMatch) {
-      // WHERE clause exists - insert filter conditions before ORDER BY/GROUP BY/HAVING
       const beforeClause = normalizedQuery.substring(0, insertPosition).trim();
       const afterClause = normalizedQuery.substring(insertPosition).trim();
       
@@ -512,7 +514,6 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
         query += ` ${afterClause}`;
       }
     } else {
-      // No WHERE clause - add one before ORDER BY/GROUP BY/HAVING
       const beforeClause = normalizedQuery.substring(0, insertPosition).trim();
       const afterClause = normalizedQuery.substring(insertPosition).trim();
       
