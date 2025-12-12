@@ -15,12 +15,160 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
   const [fromClause, setFromClause] = useState('');
   const [activeColumn, setActiveColumn] = useState(null); 
   const [filterChanged, setFilterChanged] = useState(false);
+  const [isLoadingSettings, setIsLoadingSettings] = useState(false);
   const isResizingRef = useRef(isResizing);
   const textareaRef = useRef(null);
 
+  const buildFilterQueryFromSelections = (baseQuery, selections) => {
+    const normalizedQuery = baseQuery.trim();
+    
+    const needsBackticks = (column) => /[^a-zA-Z0-9_]/.test(column);
+    const escapeColumn = (column) => needsBackticks(column) ? `\`${column}\`` : column;
+    
+    const conditions = Object.entries(selections)
+      .filter(([_, { values }]) => values && values.length > 0)
+      .map(([column, { values }]) => {
+        const nullValues = values.filter((v) => v === 'NULL');
+        const nonNullValues = values.filter((v) => v !== 'NULL');
+        
+        const nullCondition = nullValues.length > 0 ? `${escapeColumn(column)} IS NULL` : '';
+        const nonNullCondition = nonNullValues.length > 0 
+          ? `${escapeColumn(column)} IN (${nonNullValues.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ')})` 
+          : '';
+        
+        return [nullCondition, nonNullCondition].filter(Boolean).join(' OR ');
+      })
+      .filter(Boolean);
+    
+    if (conditions.length === 0) return baseQuery;
+    
+    const orderByMatch = normalizedQuery.match(/\s+ORDER\s+BY\s+/i);
+    const groupByMatch = normalizedQuery.match(/\s+GROUP\s+BY\s+/i);
+    const havingMatch = normalizedQuery.match(/\s+HAVING\s+/i);
+    const whereMatch = normalizedQuery.match(/\s+WHERE\s+/i);
+    
+    let insertPosition = normalizedQuery.length;
+    
+    if (orderByMatch && orderByMatch.index < insertPosition) insertPosition = orderByMatch.index;
+    if (groupByMatch && groupByMatch.index < insertPosition) insertPosition = groupByMatch.index;
+    if (havingMatch && havingMatch.index < insertPosition) insertPosition = havingMatch.index;
+    
+    const filterCondition = conditions.join(' AND ');
+    const beforeClause = normalizedQuery.substring(0, insertPosition).trim();
+    const afterClause = normalizedQuery.substring(insertPosition).trim();
+    
+    let query;
+    if (whereMatch) {
+      query = `${beforeClause} AND (${filterCondition})`;
+    } else {
+      query = `${beforeClause} WHERE (${filterCondition})`;
+    }
+    
+    if (afterClause) query += ` ${afterClause}`;
+    
+    return query;
+  };
+
   useEffect(() => {
-    setSelectedColumns(currentHierarchy || []);
-    setOrderedColumns(currentHierarchy || []);
+    let hasRun = false;
+    
+    const loadAndApplySavedSettings = async () => {
+      if (hasRun) return;
+      
+      const savedSettings = localStorage.getItem('lineageAppSettings');
+      if (savedSettings) {
+        hasRun = true;
+        setIsLoadingSettings(true);
+        try {
+          const settings = JSON.parse(savedSettings);
+          console.log('Loading saved settings:', settings);
+          
+          if (settings.queryText) {
+            setQueryText(settings.queryText);
+            
+            // Step 1: Execute the base query first
+            const columns = await fetchColumnsFromQuery(settings.queryText);
+            
+            if (Array.isArray(columns) && columns.length > 0) {
+              if (settings.selectClause) setSelectClause(settings.selectClause);
+              if (settings.fromClause) setFromClause(settings.fromClause);
+              
+              // Step 2: Check if there are saved filters
+              const hasFilters = settings.filterSelections && 
+                                Object.keys(settings.filterSelections).length > 0 &&
+                                Object.values(settings.filterSelections).some(f => f.values && f.values.length > 0);
+              
+              let dataToApply = null;
+              
+              if (hasFilters) {
+                // Step 3: Re-apply filters by building and executing filter query
+                console.log('Re-applying saved filters:', settings.filterSelections);
+                setFilterSelections(settings.filterSelections);
+                
+                // Build the filter query
+                const filterQuery = buildFilterQueryFromSelections(
+                  settings.queryText,
+                  settings.filterSelections
+                );
+                
+                console.log('Executing filter query on mount:', filterQuery);
+                
+                // Execute filter query
+                const filteredColumns = await fetchColumnsFromQuery(filterQuery);
+                
+                if (filteredColumns.length > 0 && window.lastQueryResult?.rows?.length > 0) {
+                  dataToApply = {
+                    columns: filteredColumns,
+                    rows: window.lastQueryResult.rows
+                  };
+                  setFilteredData(dataToApply);
+                  console.log('Filters re-applied successfully');
+                }
+              }
+              
+              // Step 4: Restore selections
+              if (settings.selectedColumns) {
+                setSelectedColumns(settings.selectedColumns);
+              }
+              if (settings.orderedColumns) {
+                setOrderedColumns(settings.orderedColumns);
+              }
+              
+              // Step 5: Auto-apply to render the chart
+              if (settings.orderedColumns && settings.orderedColumns.length > 0) {
+                setTimeout(() => {
+                  console.log('Auto-applying saved configuration with filters...');
+                  onApply(settings.orderedColumns, dataToApply);
+                  setIsLoadingSettings(false);
+                }, 500);
+              } else {
+                setIsLoadingSettings(false);
+              }
+              
+              console.log('Settings loaded and applied successfully');
+            } else {
+              setIsLoadingSettings(false);
+            }
+          } else {
+            setIsLoadingSettings(false);
+          }
+        } catch (error) {
+          console.error('Failed to load saved settings:', error);
+          setIsLoadingSettings(false);
+        }
+      }
+    };
+    
+    loadAndApplySavedSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const savedSettings = localStorage.getItem('lineageAppSettings');
+    if (!savedSettings) {
+      setSelectedColumns(currentHierarchy || []);
+      setOrderedColumns(currentHierarchy || []);
+    }
   }, [currentHierarchy]);
 
   useEffect(() => {
@@ -42,27 +190,54 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
     setIsResizing(true);
   };
 
-  const handleMouseMove = (e) => {
-    if (!isResizingRef.current) return;
-    const newWidth = Math.min(Math.max(e.clientX, 200), 600);
-    setPanelWidth(newWidth);
-  };
-  
-  const handleMouseUp = () => {
-    if (isResizingRef.current) {
-      setIsResizing(false);
-    }
-  };
-
   useEffect(() => {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+    const handleMove = (e) => {
+      if (!isResizingRef.current) return;
+      const newWidth = Math.min(Math.max(e.clientX, 200), 600);
+      setPanelWidth(newWidth);
+    };
+    
+    const handleUp = () => {
+      if (isResizingRef.current) {
+        setIsResizing(false);
+      }
+    };
+
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
     };
   }, []);
 
+  // Close filter dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      // Check if click is outside filter dropdown and active column dropdown
+      const filterDropdown = document.querySelector('[data-filter-dropdown]');
+      const activeDropdown = document.querySelector('[data-active-dropdown]');
+      
+      if (
+        showFilterDropdown &&
+        filterDropdown &&
+        !filterDropdown.contains(event.target) &&
+        (!activeDropdown || !activeDropdown.contains(event.target))
+      ) {
+        setShowFilterDropdown(false);
+        setActiveColumn(null);
+      }
+    };
+
+    if (showFilterDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showFilterDropdown]);
 
   const handleCheckboxChange = (column) => {
     setSelectedColumns((prev) =>
@@ -100,30 +275,64 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
     onApply(orderedColumns, filteredData);
   };
 
+  const handleSave = () => {
+    const settings = {
+      queryText,
+      selectedColumns,
+      orderedColumns,
+      filterSelections,
+      selectClause,
+      fromClause,
+      filteredData,
+      savedAt: new Date().toISOString()
+    };
+    
+    try {
+      localStorage.setItem('lineageAppSettings', JSON.stringify(settings));
+      alert('Settings saved successfully! They will be loaded automatically next time.');
+      console.log('Settings saved:', settings);
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+      alert('Failed to save settings. Please try again.');
+    }
+  };
+
+  const handleClearSettings = () => {
+    if (window.confirm('Are you sure you want to clear all saved settings?')) {
+      localStorage.removeItem('lineageAppSettings');
+      setQueryText('');
+      setSelectedColumns([]);
+      setOrderedColumns([]);
+      setFilterSelections({});
+      setSelectClause('');
+      setFromClause('');
+      alert('Saved settings cleared!');
+    }
+  };
+
   const handleSearch = (e) => {
     setSearchTerm(e.target.value);
   };
 
   const parseQuery = (query) => {
     const normalizedQuery = query.replace(/\s+/g, ' ').trim();
-    const queryRegex = /^SELECT\s+(.+?)\s+FROM\s+(.+?)(\s+(?:WHERE|GROUP BY|ORDER BY|;|$))/i;
-    const match = normalizedQuery.match(queryRegex);
-
-    if (match) {
-      const selectPart = match[1].trim();
-      const fromPart = match[2].trim();
-      return { selectClause: selectPart, fromClause: fromPart };
+    const cleanedQuery = normalizedQuery.replace(/;$/, '');
+    
+    const selectMatch = cleanedQuery.match(/SELECT\s+(.*?)\s+FROM/i);
+    const fromMatch = cleanedQuery.match(/FROM\s+(.*?)(?:\s+WHERE|\s+GROUP\s+BY|\s+ORDER\s+BY|$)/i);
+    
+    if (selectMatch && fromMatch) {
+      return {
+        selectClause: selectMatch[1].trim(),
+        fromClause: fromMatch[1].trim()
+      };
     }
-
-    const simpleRegex = /^SELECT\s+(.+?)\s+FROM\s+(.+)$/i;
-    const simpleMatch = normalizedQuery.match(simpleRegex);
-    if (simpleMatch) {
-      const selectPart = simpleMatch[1].trim();
-      const fromPart = simpleMatch[2].trim();
-      return { selectClause: selectPart, fromClause: fromPart };
-    }
-
-    return { selectClause: '*', fromClause: 'lineage_table' };
+    
+    console.warn('Could not parse query, using defaults');
+    return {
+      selectClause: '*',
+      fromClause: 'lineage_table'
+    };
   };
 
   const handleQuerySubmit = async () => {
@@ -134,6 +343,11 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
       setFromClause(fromClause);
       setFilterSelections({});
       setFilteredData(null);
+      setSelectedColumns([]);
+      setOrderedColumns([]);
+      setActiveColumn(null);
+      setShowFilterDropdown(false);
+      setFilterChanged(false);
     } else {
       alert('Syntax Error, Please check your query');
       setSelectClause('');
@@ -243,22 +457,69 @@ const ConfigurationPanel = ({ onApply, currentHierarchy, availableColumns, fetch
       .map(([column, { values }]) => {
         const nullValues = values.filter((v) => v === 'NULL');
         const nonNullValues = values.filter((v) => v !== 'NULL');
-        const nullCondition = nullValues.length > 0 ? `${escapeColumn(column)} IS NULL` : '';
-        const nonNullCondition = nonNullValues.length > 0
-          ? `${escapeColumn(column)} IN (${nonNullValues.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ')})`
+
+        const nullCondition = nullValues.length > 0 
+          ? `${escapeColumn(column)} IS NULL` 
+          : '';
+        
+        const nonNullCondition = nonNullValues.length > 0 
+          ? `${escapeColumn(column)} IN (${nonNullValues.map((v) => `'${v.replace(/'/g, "''")}'`).join(', ')})` 
           : '';
         return [nullCondition, nonNullCondition].filter(Boolean).join(' OR ');
       })
       .filter(Boolean);
 
-    const hasWhereClause = queryText.toLowerCase().includes('where');
+    if (conditions.length === 0) {
+      return queryText;
+    }
+
+    // Parse the original query to find WHERE, ORDER BY, GROUP BY positions
+    const normalizedQuery = queryText.trim();
+    
+    // Find the position of ORDER BY, GROUP BY, HAVING (case insensitive)
+    const orderByMatch = normalizedQuery.match(/\s+ORDER\s+BY\s+/i);
+    const groupByMatch = normalizedQuery.match(/\s+GROUP\s+BY\s+/i);
+    const havingMatch = normalizedQuery.match(/\s+HAVING\s+/i);
+    const whereMatch = normalizedQuery.match(/\s+WHERE\s+/i);
+
+    // Find the earliest position of these clauses (if they exist)
+    let insertPosition = normalizedQuery.length;
+    let foundClause = null;
+
+    if (orderByMatch && orderByMatch.index < insertPosition) {
+      insertPosition = orderByMatch.index;
+      foundClause = 'ORDER BY';
+    }
+    if (groupByMatch && groupByMatch.index < insertPosition) {
+      insertPosition = groupByMatch.index;
+      foundClause = 'GROUP BY';
+    }
+    if (havingMatch && havingMatch.index < insertPosition) {
+      insertPosition = havingMatch.index;
+      foundClause = 'HAVING';
+    }
+
+    const filterCondition = conditions.join(' AND ');
+
     let query;
-    if (hasWhereClause) {
-      query = `${queryText} ${conditions.length ? ' AND ' + conditions.join(' AND ') : ''}`;
+    if (whereMatch) {
+      // WHERE clause exists - insert filter conditions before ORDER BY/GROUP BY/HAVING
+      const beforeClause = normalizedQuery.substring(0, insertPosition).trim();
+      const afterClause = normalizedQuery.substring(insertPosition).trim();
+      
+      query = `${beforeClause} AND (${filterCondition})`;
+      if (afterClause) {
+        query += ` ${afterClause}`;
+      }
     } else {
-      query = `SELECT ${selectClause} FROM ${fromClause}${
-        conditions.length ? ' WHERE ' + conditions.join(' AND ') : ''
-      }`;
+      // No WHERE clause - add one before ORDER BY/GROUP BY/HAVING
+      const beforeClause = normalizedQuery.substring(0, insertPosition).trim();
+      const afterClause = normalizedQuery.substring(insertPosition).trim();
+      
+      query = `${beforeClause} WHERE (${filterCondition})`;
+      if (afterClause) {
+        query += ` ${afterClause}`;
+      }
     }
 
     console.log('Built filter query:', query);
@@ -365,13 +626,27 @@ const handleFilterCancel = async () => {
               flex: 1,
               overflowY: 'auto',
               padding: '15px',
-              paddingBottom: '60px',
+              paddingBottom: '110px',
               boxSizing: 'border-box',
             }}
           >
             <h2 style={{ fontSize: '18px', marginBottom: '15px', color: '#333', fontWeight: 'bold' }}>
               Configuration Panel
             </h2>
+
+            {isLoadingSettings && (
+              <div style={{ 
+                padding: '8px', 
+                background: '#fff3cd', 
+                border: '1px solid #ffc107', 
+                borderRadius: '4px', 
+                marginBottom: '10px',
+                fontSize: '13px',
+                color: '#856404'
+              }}>
+                 Loading saved settings...
+              </div>
+            )}
 
             <div style={{ marginBottom: '20px' }}>
               <label
@@ -475,6 +750,7 @@ const handleFilterCancel = async () => {
 
             {showFilterDropdown && (
               <div
+              data-filter-dropdown
                 style={{
                   position: 'absolute',
                   top: '250px',
@@ -544,6 +820,7 @@ const handleFilterCancel = async () => {
 
             {activeColumn && filterSelections[activeColumn.column]?.showValues && (
               <div
+               data-active-dropdown
                 style={{
                   position: 'absolute',
                   top: `${activeColumn.top}px`,
@@ -657,51 +934,90 @@ const handleFilterCancel = async () => {
             </div>
           </div>
 
-          <div
-            style={{
-              position: 'absolute',
-              bottom: '15px',
-              left: 0,
-              width: '100%',
-              display: 'flex',
-              justifyContent: 'center',
-            }}
-          >
-            <button
-              onClick={handleApply}
-              style={{
+          <div style={{ 
+            position: 'sticky', 
+            bottom: 0,         
+            left: 0, 
+            right: 0,
+            width: '100%', 
+            display: 'flex', 
+            flexDirection: 'column', 
+            gap: '8px', 
+            padding: '15px',    
+            paddingTop: '10px', 
+            boxSizing: 'border-box',
+            background: '#f0f0f0',  
+            marginTop: 'auto'    
+          }}>
+          <div style={{display: 'flex', gap: '8px' }}>
+            <button 
+              onClick={handleApply} 
+              style={{ 
                 padding: '10px 20px',
-                background: '#ffffffff',
-                color: '#333',
-                border: '1px solid #ccc',
-                borderRadius: '4px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                width: '90%',
-                maxWidth: '250px',
+                background: '#fff',  
+                color: '#333',      
+                border: '1px solid #ccc',  
+                borderRadius: '4px', 
+                cursor: 'pointer', 
+                fontWeight: 'bold', 
+                flex: 1,
+                fontSize: '14px' 
               }}
             >
               Apply
             </button>
+            <button 
+              onClick={handleSave} 
+              title="Save current settings for next session"
+              style={{ 
+                padding: '10px 20px', 
+                background: '#fff',  
+                color: '#333',       
+                border: '1px solid #ccc',  
+                borderRadius: '4px', 
+                cursor: 'pointer', 
+                fontWeight: 'bold', 
+                flex: 1,
+                fontSize: '14px'  
+              }}
+            >
+               Save
+            </button>
           </div>
+            <button 
+              onClick={handleClearSettings} 
+              title="Clear all saved settings"
+              style={{ 
+                padding: '8px 12px',
+                background: '#fff',     
+                color: '#333',        
+                border: '1px solid #ccc',  
+                borderRadius: '4px', 
+                cursor: 'pointer', 
+                fontSize: '12px',
+                fontWeight: 'normal'
+              }}
+            >
+            Clear Saved Settings
+          </button>
+        </div>
         </>
       )}
-{isOpen && (
-  <div
-    onMouseDown={handleMouseDown}
-    style={{
-      position: 'absolute',
-      top: 0,
-      right: 0,
-      width: '5px',
-      height: '100%',
-      cursor: 'col-resize',
-      backgroundColor: 'transparent',
-      zIndex: 1001,
-    }}
-  />
-)}
-
+      {isOpen && (
+        <div
+          onMouseDown={handleMouseDown}
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            width: '5px',
+            height: '100%',
+            cursor: 'col-resize',
+            backgroundColor: 'transparent',
+            zIndex: 1001,
+          }}
+        />
+        )}
     </div>
   );
 };
